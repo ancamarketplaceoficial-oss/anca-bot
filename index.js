@@ -27,7 +27,7 @@ app.post('/webhook', async (req, res) => {
       }, { headers: { Authorization: `Bearer ${ACCESS_TOKEN}` } });
     }
     res.sendStatus(200);
-  } catch(e){ console.log(e); res.sendStatus(200); }
+  } catch(e){ console.log("ERROR FB:", e.response?.data || e.message); res.sendStatus(200); }
 });
 
 app.get('/', (req,res)=>res.send('Bot ANCA OK'));
