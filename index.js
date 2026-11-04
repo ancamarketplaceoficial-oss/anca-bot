@@ -7,10 +7,7 @@ app.use(express.json());
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'anca2025';
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
 const PHONE_ID = process.env.PHONE_NUMBER_ID;
-
-// --- CONFIGURACION DE LA FORMULA ---
-// Cambia 800 por 1000 si lo querés más exacto para que nunca quede corto
-const FACTOR_BTU = 800; 
+const FACTOR_BTU = 1000;
 const DB_FILE = './clientes.json';
 
 function guardarCliente(from, text) {
@@ -20,77 +17,97 @@ function guardarCliente(from, text) {
   fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 }
 
-function calcularBTU(texto) {
+function detectarMedidas(texto) {
   const t = texto.toLowerCase();
   let area = 0;
-
-  // Busca patrones tipo 4x4, 4 x 4, 4m x 5m
-  const matchX = t.match(/(\d+(\.\d+)?)\s*(?:x|\*)\s*(\d+(\.\d+)?)/);
-  if (matchX) {
-    area = parseFloat(matchX[1]) * parseFloat(matchX[3]);
-  } else {
-    // Busca "20 metros", "20 m2", "20m2"
-    const matchM2 = t.match(/(\d+(\.\d+)?)\s*(m2|mts|metros|mt2)/);
+  const matchX = t.match(/(\d+(\.?\d+)?)\s*(?:x|\*|por)\s*(\d+(\.?\d+)?)/);
+  if (matchX) area = parseFloat(matchX[1]) * parseFloat(matchX[3]);
+  else {
+    const matchM2 = t.match(/(\d+(\.?\d+)?)\s*(m2|m²|mts|metros|mt2|cuadrados)/);
     if (matchM2) area = parseFloat(matchM2[1]);
   }
-
   if (area > 0) {
-    const btuExacto = area * FACTOR_BTU;
-    let equipoRecomendado = "12,000 BTU";
-    if (btuExacto > 12000) equipoRecomendado = "18,000 BTU";
-    if (btuExacto > 18000) equipoRecomendado = "24,000 BTU";
-    if (btuExacto > 24000) equipoRecomendado = "36,000 BTU";
-    if (btuExacto > 36000) equipoRecomendado = "48,000 - 60,000 BTU";
-
-    return { area, btuExacto, equipoRecomendado };
+    const btu = area * FACTOR_BTU;
+    let equipo = "12,000 BTU";
+    if (btu > 12000) equipo = "18,000 BTU";
+    if (btu > 18000) equipo = "24,000 BTU";
+    if (btu > 24000) equipo = "36,000 BTU";
+    if (btu > 36000) equipo = "48,000 BTU";
+    if (btu > 48000) equipo = "60,000 BTU";
+    return { area, equipo };
   }
   return null;
 }
 
 function responderIA(texto) {
   const t = texto.toLowerCase().trim();
-  const calculo = calcularBTU(texto);
+  const medida = detectarMedidas(texto);
 
-  // Si detectó medidas, hace el cálculo exacto
-  if (calculo) {
-    return `*Cálculo exacto ANCA* 📐
+  // --- LOGICA DE MANTENIMIENTO CON TIEMPO Y PRECIOS REALES ---
+  if (t.includes("mantenimiento") || t.includes("limpieza") || t.includes("manto")) {
+    
+    // Si ya dijo tiempo, cotiza directo
+    if (t.includes("año") || t.includes("años") || t.includes("mucho") || t.includes("nunca") || t.match(/\d+\s*años?/)) {
+        return `Perfecto, si tiene más de un año sin mantenimiento o nunca le has dado, te recomiendo el *MANTENIMIENTO GENERAL*.
 
-Vos me diste: ${calculo.area} m²
-Fórmula: ${calculo.area} m² x ${FACTOR_BTU} = *${calculo.btuExacto.toLocaleString()} BTU*
+*GENERAL - C$1,900 córdobas*
+Incluye desmontaje completo, lavado químico profundo de evaporador y condensador, limpieza de turbina, revisión de gas y sistema eléctrico. Queda como nuevo.
 
-Para que no tengas problemas y enfríe perfecto, te recomiendo un equipo de *${calculo.equipoRecomendado}*.
+Si lo querés agendar, decime cuántos aires son y en qué zona de Managua.`;
+    }
+    if (t.includes("6 meses") || t.includes("poco") || t.includes("mes") || t.includes("reciente")) {
+        return `Si tiene poco tiempo (menos de 8 meses), con el *PREVENTIVO* es suficiente.
 
-¿Querés que te cotice ese de ${calculo.equipoRecomendado} ya instalado con protector y garantía?
+*PREVENTIVO - C$1,500 córdobas*
+Incluye limpieza de filtros, evaporador, condensador, revisión de gas y presión.
 
-Escribí *1* para ver precios, *2* para instalación, *5* para asesor de ventas.`;
+¿En qué dirección sería y cuántos equipos?`;
+    }
+
+    // Si NO dijo tiempo, PREGUNTA
+    return `Claro, servicio de mantenimiento ANCA 💙
+
+Una pregunta importante para recomendarte el correcto: *¿Cuánto tiempo tiene tu aire sin recibir mantenimiento?*
+
+- ¿Menos de 6 meses?
+- ¿Más de 1 año?
+- ¿Nunca le has dado?
+
+Te cuento, tenemos:
+*Preventivo: C$1,500* (mantenimiento regular)
+*General: C$1,900* (cuando tiene mucho tiempo sin limpieza o está tirando poco aire)
+
+Decime el tiempo y te digo cuál necesitas.`;
   }
 
-  if (t === "1" || t.includes("precio")) {
-    return `*ANCA - Para cotizarte exacto* 💙
+  // VENTA NORMAL CON MEDIDAS
+  if (medida) {
+    return `Para un espacio de *${medida.area} m²*, lo ideal para que enfríe perfecto es uno de *${medida.equipo}*.
 
-¿Que medidas exactas deseas climatizar? 
-Decime por ejemplo: "4x4" o "20 metros cuadrados"
+¿Te preparo la cotización ya instalada con protector y garantía?
 
-Yo te hago la cuenta exacta: m² x ${FACTOR_BTU} = BTU necesarios.
-
-Así no te queda pequeño y no gastas de más.`;
+Solo necesito la zona donde sería la instalación.`;
   }
-  if (t === "2") return `*Instalación* 🔧 ¿Que medidas tiene el area? Ej: 4x4. Te calculo el BTU exacto y te cotizo instalado.`;
-  if (t === "3") return `*Mantenimiento* ✨ ¿Que medidas tiene el area donde esta el aire? Así veo que equipo es y te cotizo mantenimiento preventivo o general.`;
-  if (t === "4") return `*Reparación* 🛠️ ¿Que problema tiene y que medidas tiene el cuarto donde está? Te calculo y agendamos revisión $15.`;
-  if (t === "5") return `*Asesor de ventas* 👨‍💼 Perfecto, decime las medidas exactas (ej: 5x4) y te paso con asesor con la cotización ya calculada.`;
 
-  return `*Hola! Soy el asistente de ANCA* 💙🧊
+  if (t.includes("precio") || t.includes("cotizar") || t.includes("1")) {
+    return `Con gusto te cotizo.
 
-¿En qué te ayudo?
+Para darte el equipo exacto, ¿qué medidas tiene el espacio? Ej: "4x4" o "30 metros".`;
+  }
 
-*1* - Precios y capacidades
-*2* - Cotizar instalación
-*3* - Mantenimiento
-*4* - Reparación
-*5* - Asesor de ventas
+  if (t.includes("instalacion") || t.includes("2")) {
+    return `Para instalación, decime las medidas del espacio (ej: 5x4) y la dirección. Te paso el costo total instalado.`;
+  }
 
-*IMPORTANTE:* Decime siempre las medidas exactas del espacio, ej: "mi sala mide 4x5" y yo te calculo los BTU exactos con la fórmula ${FACTOR_BTU}.`;
+  if (t.includes("reparacion") || t.includes("4")) {
+    return `Te ayudo con reparación. Decime qué falla tiene (no enfría, bota agua, etc) y cuánto tiempo tiene sin mantenimiento.`;
+  }
+
+  return `Hola, bienvenido a ANCA Marketplace 💙
+
+Decime qué necesitás y las medidas del espacio. Ej: "cotizar aire para 4x4" o "mantenimiento".
+
+O escribí *asesor* para atención personal.`;
 }
 
 app.get('/webhook', (req, res) => {
@@ -114,5 +131,5 @@ app.post('/webhook', async (req, res) => {
   } catch(e){ console.log("ERROR:", e.response?.data || e.message); res.sendStatus(200); }
 });
 
-app.get('/', (req,res)=>res.send('Bot ANCA con formula m2 x '+FACTOR_BTU+' OK'));
-app.listen(process.env.PORT || 3000, ()=>console.log("Bot ANCA con formula listo"));
+app.get('/', (req,res)=>res.send('Bot ANCA v4 Mantenimiento C$ OK'));
+app.listen(process.env.PORT || 3000, ()=>console.log("Bot v4 listo"));
