@@ -7,111 +7,143 @@ app.use(express.json());
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'anca2025';
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
 const PHONE_ID = process.env.PHONE_NUMBER_ID;
-const FACTOR_BTU = 1000;
-const DB_FILE = './clientes.json';
+const OPENAI_KEY = process.env.OPENAI_API_KEY;
 
-function getDB(){ try{return JSON.parse(fs.readFileSync(DB_FILE));}catch(e){return {};} }
-function saveDB(d){ fs.writeFileSync(DB_FILE, JSON.stringify(d, null, 2)); }
-function guardarMemoria(from, obj){
-  let db = getDB(); if(Array.isArray(db)) db={};
-  if(!db[from]) db[from]={};
-  db[from] = {...db[from], ...obj, fecha: new Date().toISOString()};
-  saveDB(db);
-}
+// Memoria por cliente para no repetir preguntas
+const sesiones = new Map();
 
-function detectarMedidas(texto){
+const MENU = `Hola, bienvenido a ANCA Marketplace 💙
+Soy tu asesor virtual. Decime qué necesitas:
+
+*1* - Precio de aire / Cotización
+*2* - Mantenimiento
+*3* - Reparación
+*4* - Garantía de aire
+*5* - Hablar con asesor
+
+Podés poner el número *o* escribirme libre, como "mi aire bota agua"`;
+
+function detectarMedidas(texto) {
   const t = texto.toLowerCase();
-  let area=0;
-  const mX = t.match(/(\d+(\.?\d+)?)\s*(?:x|\*|por)\s*(\d+(\.?\d+)?)/);
-  if(mX) area=parseFloat(mX[1])*parseFloat(mX[3]);
-  else{
-    const m2 = t.match(/(\d+(\.?\d+)?)\s*(m2|m²|mts|metros|mt2|cuadrados|mtro)/);
-    if(m2) area=parseFloat(m2[1]);
+  let area = 0;
+  const matchX = t.match(/(\d+(\.?\d+)?)\s*(?:x|\*|por)\s*(\d+(\.?\d+)?)/);
+  if (matchX) area = parseFloat(matchX[1]) * parseFloat(matchX[3]);
+  else {
+    const m2 = t.match(/(\d+(\.?\d+)?)\s*(m2|m²|mts|metros|cuadrados)/);
+    if (m2) area = parseFloat(m2[1]);
   }
-  if(area>0 && area<300){
-    const btu=area*FACTOR_BTU;
-    let equipo="12,000 BTU"; if(btu>12000) equipo="18,000 BTU"; if(btu>18000) equipo="24,000 BTU"; if(btu>24000) equipo="36,000 BTU"; if(btu>36000) equipo="48,000 BTU";
-    return {area, equipo};
+  if (area > 0) {
+    const btu = area * 1000;
+    let equipo = "12,000 BTU"; if (btu > 12000) equipo = "18,000 BTU"; if (btu > 18000) equipo = "24,000 BTU"; if (btu > 24000) equipo = "36,000 BTU";
+    return { area, equipo };
   }
   return null;
 }
 
-function responderIA(texto, from){
-  const t = texto.toLowerCase().trim();
-  const medida = detectarMedidas(texto);
-  const db = getDB();
-  const mem = db[from] || {};
-
-  if(medida){ guardarMemoria(from, {area: medida.area, equipo: medida.equipo}); return `Perfecto, para *${medida.area} m²* lo ideal es un equipo de *${medida.equipo}* para que enfríe al 100%.\n\n¿En qué zona de Managua sería la instalación? Así te paso el precio total ya instalado con protector y garantía.`; }
-
-  // ZONA - ARREGLA BUG DE LA FOTO
-  if(t.includes("managua") || t.includes("masaya") || t.includes("leon") || t.includes("granada") || t.includes("carretera") || t.includes("barrio") || t.includes("residencial") || t.includes("colonia") || t.startsWith("en ")){
-    if(mem.area) return `Excelente, instalación en *${texto}* para ${mem.area} m² (${mem.equipo}).\n\nTe dejo la cotización con el asesor humano para cerrarte precio final con protector y garantía. ¿Cuántos aires son?`;
-    return `Zona ${texto} anotada. ¿Qué medidas tiene el espacio? Ej: 4x4 o 20 metros.`;
-  }
-
-  // --- AHORA RESPONDE CUALQUIER PREGUNTA ---
-
-  if(t.includes("marca") || t.includes("cual marca") || t.includes("que aire")) return `Trabajamos Midea, Confortfresh y Lennox - todas inverter, súper ahorrativas y silenciosas. Te recomiendo según medidas. ¿Qué medidas tiene tu espacio?`;
-  
-  if(t.includes("credito") || t.includes("cuota") || t.includes("financiado") || t.includes("credi")) return `Sí, aceptamos efectivo, transferencia, tarjeta y crédito con CrediFacil solo con tu cédula. Aprobación en 15 min. ¿Qué medidas tiene el espacio? Te cotizo en crédito también.`;
-  
-  if(t.includes("tarjeta") || t.includes("pago") || t.includes("transferencia")) return `Aceptamos efectivo, transferencia BAC/Lafise y tarjeta de crédito/débito. ¿Qué medidas tiene el espacio?`;
-  
-  if(t.includes("garantia") || t.includes("protector")) return `Todo equipo nuevo lleva *1 año de garantía en instalación*, 5-10 años en compresor según marca y protector de voltaje incluido. Todo instalado. ¿Medidas del espacio?`;
-  
-  if(t.includes("bota agua") || t.includes("tira agua") || t.includes("gotea")) return `Si bota agua es porque necesita mantenimiento - está tapado el drenaje. Con el *General C$1,900* lo destapamos y queda como nuevo. ¿Cuánto tiempo tiene sin mantenimiento y en qué zona es?`;
-  
-  if(t.includes("no enfria") || t.includes("no enfría") || t.includes("no hel") || t.includes("poco frio")) return `Si no enfría puede ser falta de gas o suciedad. La revisión a domicilio cuesta C$15 que se abona si haces la reparación. ¿Cuánto tiempo tiene sin mantenimiento? ¿Qué medidas tiene el cuarto?`;
-  
-  if(t.includes("ruido") || t.includes("suena")) return `Si hace ruido es falta de mantenimiento en la turbina. Con un Preventivo C$1,500 o General C$1,900 se corrige. ¿Cuánto tiempo tiene sin mantenimiento?`;
-  
-  if(t.includes("cuanto tarda") || t.includes("instalacion") || t.includes("cuanto demora")) return `Instalación el mismo día si es en Managua, tarda 2-3 horas, te dejamos todo limpio, con garantía y protector. ¿Qué medidas tiene el espacio y en qué zona?`;
-  
-  if(t.includes("horario") || t.includes("hora") || t.includes("abierto")) return `Atendemos Lunes a Sábado 8am a 6pm, Domingos hasta mediodía. Instalaciones todos los días. ¿Qué medidas tiene tu espacio?`;
-  
-  if(t.includes("donde") || t.includes("ubicacion") || t.includes("direccion") || t.includes("taller")) return `Estamos en Managua y atendemos a domicilio en todo Managua, Masaya, Granada, León. Instalación hoy mismo. ¿En qué zona sería?`;
-  
-  if(t.includes("mantenimiento")){
-    if(t.includes("año") || t.includes("nunca") || t.includes("mucho")) return `Si tiene más de 1 año o nunca le has dado, necesitás el *GENERAL C$1,900* - lavado químico completo. ¿Cuántos equipos y zona?`;
-    if(t.includes("mes")) return `Con poco tiempo, *PREVENTIVO C$1,500* es suficiente. ¿Zona?`;
-    return `Para recomendarte: *¿Cuánto tiempo tiene sin mantenimiento?*\n\nPreventivo C$1,500 (menos de 8 meses)\nGeneral C$1,900 (más de 1 año)\n\nDecime el tiempo.`;
-  }
-
-  if(t.includes("12.000") || t.includes("12000") || t.includes("no me ayuda") || t.includes("muy pequeño")){
-    return `Correcto, por eso te pido medidas. Un 12k para ${mem.area || '14'} m² te queda corto y gasta más luz. Necesitas *${mem.equipo || '18,000 BTU'}* mínimo. ¿Te cotizo ese?`;
-  }
-
-  if(t === "hola" || t === "buenas" || t.length < 7){
-    if(mem.area) return `Hola de nuevo! Tengo anotado ${mem.area} m² (${mem.equipo}). ¿En qué zona sería la instalación?`;
-    return `Hola, bienvenido a ANCA Marketplace 💙\n\nSoy tu asesor virtual. Decime qué necesitás:\n- Precio de aire\n- Mantenimiento\n- Reparación\n\nY las medidas del espacio, ej: "4x4" o "20 metros". O escribí *asesor* para hablar con una persona.`;
-  }
-
-  if(t.includes("precio") || t.includes("cuanto cuesta") || t.includes("cotizar")){
-    if(mem.area) return `Ya tengo tu medida: ${mem.area} m². ¿En qué zona de Managua sería para pasarte precio instalado?`;
-    return `Con gusto te cotizo. ¿Qué medidas tiene el espacio? Ej: 4x4 o 20 metros.`;
-  }
-
-  if(t.includes("asesor") || t.includes("persona") || t.includes("humano")) return `Te paso con asesor humano ahora mismo 👨‍💼. Mientras, ¿qué medidas tiene el espacio? Así va con cotización lista.`;
-
-  // RESPUESTA INTELIGENTE PARA CUALQUIER OTRA COSA
-  return `Buena consulta. En ANCA te ayudamos con eso, trabajamos instalación, mantenimiento y reparación con garantía.\n\nPara darte el dato exacto, ¿me decís qué medidas tiene el espacio? Ej: 4x4. Y si preferís, escribí *asesor* y te atiendo yo personalmente.`;
+async function responderConIA(texto, sesion) {
+  if (!OPENAI_KEY) return null;
+  try {
+    const res = await axios.post('https://api.openai.com/v1/chat/completions', {
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: `Eres asesor de ANCA Marketplace Managua. Vendes, instalas, reparas y das mantenimiento a aires. Precios: Preventivo C$1500, General C$1900. Garantía instalación 1 año, compresor 5-10 años según marca, protector incluido. Horario Lun-Sab 8am-6pm. Pagos efectivo, transferencia, tarjeta. Contexto actual del cliente: ${JSON.stringify(sesion)}. Responde corto, humano, español nicaragüense. Si pregunta precio de equipo, pide medidas, no inventes precio exacto.` },
+        { role: "user", content: texto }
+      ],
+      max_tokens: 300
+    }, { headers: { Authorization: `Bearer ${OPENAI_KEY}` } });
+    return res.data.choices[0].message.content;
+  } catch(e){ console.log("Error OpenAI:", e.response?.data || e.message); return null; }
 }
 
-app.get('/webhook', (req, res) => { if (req.query['hub.verify_token'] === VERIFY_TOKEN) return res.send(req.query['hub.challenge']); res.sendStatus(403); });
+async function procesar(from, textoOriginal) {
+  const t = textoOriginal.toLowerCase().trim();
+  let s = sesiones.get(from) || { paso: 'inicio', area: null, equipo: null, zona: null, tema: null };
+  
+  // Reiniciar
+  if (t === 'menu' || t === 'inicio' || t === 'hola' && s.paso === 'inicio') {
+    s.paso = 'menu'; sesiones.set(from, s);
+    return MENU;
+  }
+  if (t === 'hola' || t === 'buenas' || t === 'hello') {
+    // Si ya está en medio de cotización, no lo mandes al menú, seguí
+    if (s.paso !== 'inicio' && s.paso !== 'menu') return `Hola de nuevo! Seguimos donde quedamos. ${s.area ? `Tengo anotado ${s.area} m² (${s.equipo}).` : ''} ¿En qué zona sería?`;
+    s.paso = 'menu'; sesiones.set(from, s); return MENU;
+  }
+
+  // Detectar opción numérica O por palabra - OPCIONAL, las 2 sirven
+  let opcion = null;
+  if (t === '1' || t.includes('precio') || t.includes('cotiz') || t.includes('cuanto cuesta') || t.includes('cuánto cuesta')) opcion = '1';
+  if (t === '2' || t.includes('mantenimiento') || t.includes('limpieza')) opcion = '2';
+  if (t === '3' || t.includes('repar') || t.includes('no enfr') || t.includes('bota agua') || t.includes('ruido') || t.includes('dañ')) opcion = '3';
+  if (t === '4' || t.includes('garant')) opcion = '4';
+  if (t === '5' || t.includes('asesor') || t.includes('humano') || t.includes('persona')) opcion = '5';
+
+  if (opcion) {
+    s.tema = opcion;
+    if (opcion === '1') { s.paso = 'esperando_medidas'; sesiones.set(from, s); return `Con gusto te cotizo. ¿Qué medidas tiene el espacio? Ej: 4x4 o 20 metros.`; }
+    if (opcion === '2') { s.paso = 'mantenimiento_tiempo'; sesiones.set(from, s); return `Perfecto. Para recomendarte bien: *¿Cuánto tiempo tiene tu aire sin mantenimiento?* ¿Meses, más de un año, o nunca? \n\nTenemos:\n*Preventivo: C$1,500*\n*General: C$1,900*`; }
+    if (opcion === '3') { s.paso = 'reparacion_detalle'; sesiones.set(from, s); return `Te ayudo con la reparación. Decime: ¿Qué le pasa al aire? ¿No enfría, bota agua, hace ruido, no enciende? Y ¿qué marca es?`; }
+    if (opcion === '4') { s.paso = 'garantia_detalle'; sesiones.set(from, s); return `*Garantía ANCA* 💙\n\n✅ Instalación: 1 año\n✅ Compresor: 5 a 10 años según marca\n✅ Protector de voltaje incluido\n\nSi tu aire fue instalado por nosotros y tiene falla, lo cubrimos sin costo.\n\nDecime: ¿Cuándo lo instalamos y qué falla tiene? Si podés, mandame foto de la factura o del aire.`; }
+    if (opcion === '5') { s.paso = 'asesor'; sesiones.set(from, s); return `Te paso con asesor humano ahora mismo 👨‍💼. Mientras, ¿qué medidas tiene el espacio o qué necesitas? Así llega con la info lista.`; }
+  }
+
+  // Flujo cotización con memoria
+  if (s.paso === 'esperando_medidas') {
+    const med = detectarMedidas(textoOriginal);
+    if (med) {
+      s.area = med.area; s.equipo = med.equipo; s.paso = 'esperando_zona'; sesiones.set(from, s);
+      return `Perfecto, para ${med.area} m² lo ideal es un equipo de *${med.equipo}* para que enfríe al 100%.\n\n¿En qué zona de Managua sería la instalación? Así te paso el precio total ya instalado con protector y garantía.`;
+    }
+    return `No te entendí las medidas. Decime como "4x4" o "20 metros".`;
+  }
+
+  if (s.paso === 'esperando_zona') {
+    s.zona = textoOriginal; s.paso = 'cotizacion_lista'; sesiones.set(from, s);
+    return `Excelente, instalación en *${textoOriginal}* para ${s.area} m² (${s.equipo}).\n\nTe dejo la cotización con el asesor humano para cerrarte precio final con protector y garantía. ¿Cuántos aires son?`;
+  }
+
+  if (s.paso === 'cotizacion_lista') {
+    s.paso = 'asesor'; sesiones.set(from, s);
+    return `Listo, anotado. Te paso con asesor para cerrarte todo de una vez. ¿Querés que te llame o seguimos por aquí?`;
+  }
+
+  if (s.paso === 'mantenimiento_tiempo') {
+    if (t.includes('año') || t.includes('nunca') || t.includes('mucho')) { s.paso='mantenimiento_zona'; sesiones.set(from,s); return `Si tiene más de un año, te recomiendo el *GENERAL en C$1,900*. Queda como nuevo. ¿En qué zona sería y cuántos aires son?`; }
+    if (t.includes('mes')) { s.paso='mantenimiento_zona'; sesiones.set(from,s); return `Con el *PREVENTIVO en C$1,500* es suficiente. ¿En qué zona sería?`; }
+    return `¿Me decís si tiene meses, más de un año, o nunca le han hecho?`;
+  }
+
+  if (s.paso === 'mantenimiento_zona' || s.paso === 'reparacion_detalle' || s.paso === 'garantia_detalle') {
+    s.paso = 'asesor'; sesiones.set(from, s);
+    return `Perfecto, ya lo anoté. Te paso con asesor humano para agendarte y confirmarte precio final. ¿Me confirmás tu zona y tu nombre?`;
+  }
+
+  // Si nada calzó, IA abierta
+  const ia = await responderConIA(textoOriginal, s);
+  if (ia) return ia + `\n\nSi querés, escribí *menu* para ver las opciones.`;
+
+  return `Buena pregunta. Para ayudarte bien, escribí *menu* y elegí una opción, o decime las medidas del espacio como "4x4".`;
+}
+
+app.get('/webhook', (req, res) => {
+  if (req.query['hub.verify_token'] === VERIFY_TOKEN) return res.send(req.query['hub.challenge']);
+  res.sendStatus(403);
+});
+
 app.post('/webhook', async (req, res) => {
-  try{
+  try {
     const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-    if(msg){
-      const from=msg.from; const text=msg.text?.body || "";
-      console.log(from, text);
-      const respuesta = responderIA(text, from);
-      guardarMemoria(from, {ultimo: text});
-      await axios.post(`https://graph.facebook.com/v20.0/${PHONE_ID}/messages`, { messaging_product:"whatsapp", to:from, text:{body:respuesta} }, { headers:{Authorization:`Bearer ${ACCESS_TOKEN}`} });
+    if (msg) {
+      const from = msg.from;
+      const text = msg.text?.body || "";
+      const respuesta = await procesar(from, text);
+      await axios.post(`https://graph.facebook.com/v20.0/${PHONE_ID}/messages`, {
+        messaging_product: "whatsapp", to: from, text: { body: respuesta },
+      }, { headers: { Authorization: `Bearer ${ACCESS_TOKEN}` } });
     }
     res.sendStatus(200);
-  }catch(e){ console.log("ERROR:", e.response?.data || e.message); res.sendStatus(200); }
+  } catch(e){ console.log("ERROR:", e.response?.data || e.message); res.sendStatus(200); }
 });
-app.get('/', (req,res)=>res.send('Bot ANCA v6 FINAL sin IA externa OK'));
-app.get('/clientes', (req,res)=>{ try{res.json(getDB());}catch(e){res.json({});} });
-app.listen(process.env.PORT || 3000, ()=>console.log("Bot v6 FINAL listo"));
+
+app.get('/', (req,res)=>res.send('Bot ANCA v6 con Menu + Memoria OK'));
+app.listen(process.env.PORT || 3000, ()=>console.log("Bot v6 lista"));
