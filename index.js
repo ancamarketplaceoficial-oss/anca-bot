@@ -1,4 +1,4 @@
-// BOT ANCA - v18 FINAL - NO SE SALTA PASOS
+// BOT ANCA - v20 FINAL - IA PARA ENTENDER, TABLA PARA NO INVENTAR
 const fetch = require('node-fetch');
 const express = require('express');
 const app = express();
@@ -7,12 +7,14 @@ app.use(express.json());
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'anca2025';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 const ANCA_LAT = 12.1340;
 const ANCA_LON = -86.3590;
 const KM_GRATIS = 20;
 const PRECIO_KM_EXTRA = 16;
 
+// CATALOGO REAL - UNICA FUENTE DE VERDAD. LA IA NO PUEDE INVENTAR FUERA DE AQUI.
 const PRODUCTOS = [
   {id:"p1", marca:"GPLUS", tipo:"PORTATIL", btu:12000, modelo:"GP-P12AO", voltaje:"110V", inverter:"No", seer:"-", suministro:12825, instalado:12825},
   {id:"p2", marca:"GPLUS", tipo:"VENTANA", btu:6000, modelo:"GP-W061MS", voltaje:"110V", inverter:"No", seer:"-", suministro:6210, instalado:6210},
@@ -38,51 +40,8 @@ const PRODUCTOS = [
 ];
 
 function fmt(n){ return 'C$' + n.toLocaleString('en-US'); }
-async function enviar(to, payload){
-  const url = `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`;
-  const r = await fetch(url, {method:'POST', headers:{Authorization:`Bearer ${WHATSAPP_TOKEN}`, 'Content-Type':'application/json'}, body: JSON.stringify({messaging_product:'whatsapp', to, ...payload})});
-  const data = await r.text(); console.log('ENVIO', r.status, data); return data;
-}
-function enviarTexto(to, body){ return enviar(to, {type:'text', text:{body}}); }
-function enviarLista(to, body, button, sections){ return enviar(to, {type:'interactive', interactive:{type:'list', body:{text:body}, action:{button, sections}}}); }
-
-function menuPrincipal(to, nombre){
-  return enviarLista(to, `Gracias ${nombre}! Ya tengo tus datos.\n\nQue necesitas?`, 'Menu de opciones',
-  [{title:'ANCA Marketplace', rows:[
-    {id:'menu_instalado', title:'Suministro e Instalado', description:'Equipo + instalado, con garantia'},
-    {id:'menu_solo_equipo', title:'Solo equipo', description:'Solo suministro, sin instalacion'},
-    {id:'menu_asesor', title:'Hablar con asesor', description:'Te atiende una persona de ANCA'}
-  ]}]);
-}
-function menuVoltaje(to){
-  return enviarLista(to, 'Que voltaje tenes en tu casa?', 'Ver voltaje',
-  [{title:'Voltaje', rows:[
-    {id:'volt_110V', title:'110 Voltios', description:'Enchufe normal de casa'},
-    {id:'volt_220V', title:'220 Voltios', description:'Enchufe especial / grueso'},
-    {id:'volt_nose', title:'No se', description:'Te muestro todos'}
-  ]}]);
-}
-function menuBtu(to, modo, recomendado){
-  return enviarLista(to, `Segun tus medidas, te recomiendo *${recomendado} BTU*.\n\nQueres ver esos o otra capacidad?`, 'Ver capacidades',
-  [{title:'Capacidades', rows:[
-    {id:`btu_6000_${modo}`, title:'6,000 BTU', description:'Cuarto pequeno'},
-    {id:`btu_12000_${modo}`, title:'12,000 BTU', description:'Cuarto / sala pequena'},
-    {id:`btu_18000_${modo}`, title:'18,000 BTU', description:'Sala mediana'},
-    {id:`btu_24000_${modo}`, title:'24,000 BTU', description:'Sala grande'},
-    {id:`btu_36000_${modo}`, title:'36,000 BTU', description:'Local / area grande'},
-    {id:`btu_60000_${modo}`, title:'60,000 BTU', description:'Piso-Techo / Cassette'}
-  ]}]);
-}
-function menuEquipos(to, btu, modo, voltaje){
-  let filtrados = PRODUCTOS.filter(p=>p.btu===btu);
-  if(voltaje && voltaje!=='nose') filtrados = filtrados.filter(p=>p.voltaje===voltaje);
-  if(filtrados.length===0) filtrados = PRODUCTOS.filter(p=>p.btu===btu);
-  const rows = filtrados.slice(0,10).map(p=>{
-    const precio = modo==='instalado' ? p.instalado : p.suministro;
-    const tipoCorto = p.tipo==='PISO-TECHO' ? 'P-TECHO' : p.tipo;
-    return {id:`prod_${p.id}_${modo}`, title:`${p.marca} ${tipoCorto} ${p.btu}`, description:`${p.modelo} | ${p.voltaje} | ${p.seer} | ${fmt(precio)}`};
-  });
-  return enviarLista(to, `Para ${btu} BTU ${voltaje && voltaje!=='nose' ? 'en '+voltaje : ''} tenemos ${modo==='instalado' ? 'con instalacion' : 'solo equipo'}:`, 'Ver equipos', [{title:`Equipos ${btu} BTU`, rows}]);
+function recomendarBtu(m2){
+  if(m2<=12) return 12000; if(m2<=18) return 12000; if(m2<=24) return 18000; if(m2<=36) return 24000; if(m2<=50) return 36000; return 60000;
 }
 function haversine(lat1, lon1, lat2, lon2){
   const R=6371; const dlat=(lat2-lat1)*Math.PI/180; const dlon=(lon2-lon1)*Math.PI/180;
@@ -94,126 +53,212 @@ function calcularKm(lat, lon){
   if(dist<=KM_GRATIS) return {dist, costo:0};
   return {dist, costo: Math.round((dist-KM_GRATIS)*PRECIO_KM_EXTRA)};
 }
-function recomendarBtu(m2){
-  if(m2<=12) return 12000; if(m2<=18) return 12000; if(m2<=24) return 18000; if(m2<=36) return 24000; if(m2<=50) return 36000; return 60000;
+
+// --- IA: SOLO INTERPRETA, NUNCA INVENTA PRECIOS ---
+async function cerebroIA(mensajeCliente, datosActuales){
+  if(!GEMINI_API_KEY) return null;
+  const catalogoTexto = PRODUCTOS.map(p=>`${p.marca} ${p.tipo} ${p.btu}BTU ${p.voltaje} ${p.modelo} Suministro:${p.suministro} Instalado:${p.instalado}`).join('\n');
+  const prompt = `
+Eres el asesor virtual de ANCA Marketplace, empresa seria de Nicaragua. Hablas de usted, formal, profesional, sin emojis exagerados, sin inventar.
+
+REGLAS DURAS, NO LAS ROMPAS NUNCA:
+1. Solo puedes ofrecer equipos de este catalogo, nada fuera de el:
+${catalogoTexto}
+2. REGLA DE VOLTAJE: 6000 y 12000 BTU existen en 110V y 220V. 18000 BTU en adelante SOLO existen en 220V. Si el cliente pide 18000, 24000, 36000 o 60000 en 110V, NO le inventes uno. Dile que no existe en 110V y ofrece 220V o 2 equipos de 12000 en 110V.
+3. Los precios son exactamente los del catalogo. Nunca inventes otro precio.
+4. Kilometraje: 20 km gratis desde Km 9 Carretera Nueva a Leon, Altos de Motastepe. Despues C$16 por km extra. Solo se calcula cuando el cliente manda su ubicacion, nunca antes.
+5. Si el cliente pide algo que no tienes, di claramente "No tenemos ese modelo" y ofrece lo mas cercano que SI tienes.
+
+DATOS QUE YA TENEMOS DEL CLIENTE: ${JSON.stringify(datosActuales)}
+MENSAJE DEL CLIENTE: "${mensajeCliente}"
+
+Devuelve SOLO este JSON, sin texto extra:
+{
+  "nombre": "nombre completo o null si no lo dijo",
+  "ubicacionTexto": "barrio y municipio o null",
+  "m2": "numero de metros cuadrados o null",
+  "btuSolicitado": "numero o null si pidio BTU directo",
+  "voltaje": "110V o 220V o null",
+  "marcaSolicitada": "GPLUS, LG, HISENSE o null",
+  "tipoSolicitado": "SPLIT, VENTANA, PORTATIL, PISO-TECHO, CASSETTE o null",
+  "quiere": "instalado, solo_equipo, asesor, o null",
+  "respuestaSugerida": "respuesta corta y profesional para el cliente, sin precios inventados"
 }
+`;
+  try{
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({contents:[{parts:[{text: prompt}]}]})
+    });
+    const j = await r.json();
+    const txt = j.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const m = txt.match(/\{[\s\S]*\}/);
+    if(!m) return null;
+    return JSON.parse(m[0]);
+  }catch(e){ console.log('IA ERROR', e); return null; }
+}
+
+async function enviar(to, payload){
+  const url = `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`;
+  const r = await fetch(url, {method:'POST', headers:{Authorization:`Bearer ${WHATSAPP_TOKEN}`, 'Content-Type':'application/json'}, body: JSON.stringify({messaging_product:'whatsapp', to, ...payload})});
+  const data = await r.text(); console.log('ENVIO', r.status, data); return data;
+}
+function enviarTexto(to, body){ return enviar(to, {type:'text', text:{body}}); }
+
 const estado = {};
 app.get('/webhook', (req,res)=>{
   const mode=req.query['hub.mode']; const token=req.query['hub.verify_token']; const challenge=req.query['hub.challenge'];
   if(mode==='subscribe' && token===VERIFY_TOKEN) return res.status(200).send(challenge);
   return res.sendStatus(403);
 });
+
 app.post('/webhook', async (req,res)=>{
   try{
     const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     if(!msg) return res.sendStatus(200);
     const from = msg.from;
-    let st = estado[from] || {paso:'inicio'};
+    let st = estado[from] || {paso:'inicio', nombre:null, ubicacionTexto:null, m2:null, btuRecomendado:null, voltaje:null, modo:null, productoId:null};
     let textoRaw = msg.text?.body?.trim() || '';
     let texto = textoRaw.toLowerCase();
-    let listId = msg.interactive?.list_reply?.id || '';
+    let btnId = msg.interactive?.button_reply?.id || '';
 
-    // Si dice REINICIAR, empieza de cero
-    if(texto==='reiniciar' || texto==='menu'){
-      estado[from]={paso:'nombre'};
-      await enviarTexto(from, 'Hola! Soy tu asistente de ANCA Marketplace.\n\nPara darte una cotizacion exacta, como te llamas? Nombre y apellido por favor.');
+    if(texto==='reiniciar'){
+      estado[from]={paso:'nombre', nombre:null, ubicacionTexto:null, m2:null, btuRecomendado:null, voltaje:null, modo:null, productoId:null};
+      await enviarTexto(from, 'Buenas tardes, le atiende ANCA Marketplace.\n\n¿Con quién tengo el gusto? Me indica su nombre y apellido, por favor.');
       return res.sendStatus(200);
     }
 
-    // UBICACION - SOLO AL FINAL
+    // UBICACION - SOLO AL FINAL, PARA CALCULAR TOTAL REAL
     if(msg.type==='location'){
       const {dist, costo} = calcularKm(msg.location.latitude, msg.location.longitude);
       const p = PRODUCTOS.find(x=>x.id===st.productoId);
       if(p && st.modo==='instalado'){
         const total = p.instalado + costo;
-        console.log(`LEAD ANCA - Nombre: ${st.nombre} | Tel: ${from} | Vive: ${st.ubicacionTexto} | Medidas: ${st.m2} m2 | Voltaje: ${st.voltaje} | Equipo: ${p.marca} ${p.modelo} | Dist: ${dist} km | Total: ${fmt(total)}`);
-        await enviarTexto(from, `Gracias ${st.nombre}!\n\nTu cotizacion final:\n*${p.marca} ${p.tipo} ${p.btu} BTU*\nModelo: ${p.modelo}\nVoltaje: ${p.voltaje} | ${p.inverter} | ${p.seer}\n\nPrecio con instalacion: ${fmt(p.instalado)}\nDistancia desde ANCA: ${dist} km\n${costo>0 ? `Kilometraje extra: ${fmt(costo)} (${dist} km - 20 km gratis x C$16)\n` : 'Kilometraje: C$0 (dentro de los 20 km gratis)\n'}*TOTAL A PAGAR: ${fmt(total)}*\n\nIncluye instalacion basica, base, sellado y protector de voltaje de cortesia.\nGarantia: 18 meses compresor, 1 ano partes.\n\nLo apartamos? Escribi *SI* para apartarlo.`);
+        console.log(`LEAD ANCA - Nombre:${st.nombre} | Tel:${from} | Vive:${st.ubicacionTexto} | M2:${st.m2} | Voltaje:${st.voltaje} | Equipo:${p.marca} ${p.modelo} | Dist:${dist}km | Total:${fmt(total)}`);
+        await enviarTexto(from, `Gracias, ${st.nombre}.\n\nCOTIZACIÓN FINAL - ANCA MARKETPLACE\n\nEquipo: ${p.marca} ${p.tipo} ${p.btu} BTU\nModelo: ${p.modelo}\nVoltaje: ${p.voltaje} | ${p.inverter} | ${p.seer}\n\nPrecio con instalación: ${fmt(p.instalado)}\nDistancia desde nuestra tienda: ${dist} km\n${costo>0 ? `Costo por kilometraje adicional: ${fmt(costo)}\n` : 'Kilometraje dentro de cobertura sin costo.\n'}TOTAL A PAGAR: ${fmt(total)}\n\nIncluye instalación básica, base, sellado y protector de voltaje de cortesía.\nGarantía: 18 meses en compresor, 1 año en partes.\n\n¿Desea que le apartemos este equipo? Responda SI para apartarlo.`);
+        estado[from]={...st, paso:'esperando_si'};
       }
-      estado[from] = {...st, paso:'esperando_si'};
       return res.sendStatus(200);
     }
 
-    // PASO 1: NOMBRE - obligatorio, no se puede saltar
     if(st.paso==='inicio'){
-      estado[from]={paso:'nombre'};
-      await enviarTexto(from, 'Hola! Soy tu asistente virtual de ANCA Marketplace.\n\nPara ayudarte con tu cotizacion, como te llamas? Nombre y apellido por favor.');
+      estado[from]={...st, paso:'nombre'};
+      await enviarTexto(from, 'Buenas tardes, le atiende ANCA Marketplace.\n\n¿Con quién tengo el gusto? Me indica su nombre y apellido, por favor.');
       return res.sendStatus(200);
     }
+
+    // USAR IA PARA ENTENDER, PERO VALIDAR CONTRA LA TABLA
+    const ia = await cerebroIA(textoRaw, st);
+
+    // PASO NOMBRE
     if(st.paso==='nombre'){
-      if(textoRaw.length < 3 || texto==='hola'){
-        await enviarTexto(from, 'Decime tu nombre y apellido por favor, asi te atiendo mejor. Ej: Juan Perez');
-        return res.sendStatus(200);
-      }
-      st.nombre = textoRaw; st.paso='donde_vive'; estado[from]=st;
-      await enviarTexto(from, `Mucho gusto ${st.nombre}! 😊\n\nDonde vivis? Decime tu barrio y municipio. Ej: Altos de Motastepe, Managua`);
+      const nombre = ia?.nombre || textoRaw;
+      if(nombre.length < 3 || texto==='hola'){ await enviarTexto(from, 'Me indica su nombre y apellido, por favor, para atenderle mejor.'); return res.sendStatus(200); }
+      st.nombre = nombre; st.paso='donde_vive'; estado[from]=st;
+      await enviarTexto(from, `Mucho gusto, ${st.nombre}.\n\n¿En qué barrio y municipio será la instalación?`);
       return res.sendStatus(200);
     }
     if(st.paso==='donde_vive'){
-      st.ubicacionTexto = textoRaw; st.paso='medidas'; estado[from]=st;
-      await enviarTexto(from, `Perfecto ${st.nombre}, anotado: ${st.ubicacionTexto}.\n\nAhora, para recomendarte la capacidad correcta, que medidas tiene el cuarto a climatizar?\n\nEscribilo asi: *4 x 3* (largo x ancho en metros)`);
+      st.ubicacionTexto = ia?.ubicacionTexto || textoRaw; st.paso='medidas'; estado[from]=st;
+      await enviarTexto(from, `Anotado, ${st.nombre}: ${st.ubicacionTexto}.\n\nPara recomendarle la capacidad correcta, ¿qué medidas aproximadas tiene el ambiente a climatizar? Puede escribirlo como guste.`);
       return res.sendStatus(200);
     }
     if(st.paso==='medidas'){
-      const nums = textoRaw.replace(',','.').match(/(\d+(\.\d+)?)/g);
-      let m2 = 0;
-      if(nums && nums.length>=2) m2 = parseFloat(nums[0])*parseFloat(nums[1]);
-      else if(nums && nums.length===1) m2 = parseFloat(nums[0]);
-      if(!m2){ await enviarTexto(from, 'No te entendi la medida. Escribila asi porfa: *4 x 3*'); return res.sendStatus(200); }
-      st.m2 = m2; st.btuRecomendado = recomendarBtu(m2); st.paso='voltaje'; estado[from]=st;
-      await enviarTexto(from, `Entendido, ${m2} m2. Para ese espacio te recomiendo *${st.btuRecomendado} BTU*.`);
-      await menuVoltaje(from);
-      return res.sendStatus(200);
-    }
-    if(listId.startsWith('volt_')){
-      st.voltaje = listId.replace('volt_',''); st.paso='menu_principal'; estado[from]=st;
-      await menuPrincipal(from, st.nombre);
-      return res.sendStatus(200);
-    }
-    // Si esta en paso voltaje y escribe texto, volver a pedir voltaje
-    if(st.paso==='voltaje' && !listId){ await menuVoltaje(from); return res.sendStatus(200); }
-    // Si esta en paso menu y no ha elegido, no dejar avanzar
-    if(st.paso==='menu_principal' && !listId){
-      await menuPrincipal(from, st.nombre); return res.sendStatus(200);
-    }
-
-    if(listId==='menu_instalado'){ st.modo='instalado'; st.paso='btu'; estado[from]=st; await menuBtu(from,'instalado', st.btuRecomendado); return res.sendStatus(200); }
-    if(listId==='menu_solo_equipo'){ st.modo='suministro'; st.paso='btu'; estado[from]=st; await menuBtu(from,'suministro', st.btuRecomendado); return res.sendStatus(200); }
-    if(listId==='menu_asesor'){
-      console.log(`LEAD ANCA - Nombre: ${st.nombre} | Tel: ${from} | Vive: ${st.ubicacionTexto} | Medidas: ${st.m2} m2 | Voltaje: ${st.voltaje} | Quiere asesor`);
-      await enviarTexto(from, `Perfecto ${st.nombre}, en un momento te atiende un asesor.\n\nYa tenemos tus datos:\nNombre: ${st.nombre}\nVive en: ${st.ubicacionTexto}\nMedidas: ${st.m2} m2\nVoltaje: ${st.voltaje}\n\nGracias!`);
-      return res.sendStatus(200);
-    }
-    if(listId.startsWith('btu_')){
-      const partes = listId.split('_'); const btu = parseInt(partes[1]); const modo = partes[2];
-      st={...st, modo, btu, paso:'equipo'}; estado[from]=st;
-      await menuEquipos(from, btu, modo, st.voltaje);
-      return res.sendStatus(200);
-    }
-    if(listId.startsWith('prod_')){
-      const partes = listId.split('_'); const prodId = partes[1]; const modo = partes[2];
-      st={...st, modo, productoId: prodId, paso:'ubicacion_final'}; estado[from]=st;
-      const p = PRODUCTOS.find(x=>x.id===prodId);
-      if(modo==='instalado'){
-        await enviarTexto(from, `Excelente eleccion ${st.nombre}!\n*${p.marca} ${p.tipo} ${p.btu} BTU*\nModelo: ${p.modelo}\nVoltaje: ${p.voltaje} | ${p.inverter} | ${p.seer}\nPrecio con instalacion base: ${fmt(p.instalado)}\n\nPara darte el total exacto, mandame tu ubicacion por WhatsApp:\nAdjuntar > Ubicacion > Enviar ubicacion actual 📍`);
-      } else {
-        await enviarTexto(from, `Excelente eleccion ${st.nombre}!\n*${p.marca} ${p.tipo} ${p.btu} BTU*\nModelo: ${p.modelo}\nVoltaje: ${p.voltaje} | ${p.inverter} | ${p.seer}\n\n*TOTAL SOLO EQUIPO: ${fmt(p.suministro)}*\nIncluye equipo nuevo en caja, garantia 18 meses compresor y 1 ano partes, envio en Managua.\n\nLo apartamos? Escribi *SI*.`);
-        st.paso='esperando_si'; estado[from]=st;
+      let m2 = ia?.m2 || null;
+      if(!m2){
+        const nums = textoRaw.replace(',','.').match(/(\d+(\.\d+)?)/g);
+        if(nums && nums.length>=2) m2 = parseFloat(nums[0])*parseFloat(nums[1]);
+        else if(nums && nums.length===1) m2 = parseFloat(nums[0]);
       }
+      // Si el cliente pidio BTU directo, respetarlo, no imponer
+      if(ia?.btuSolicitado){ st.btuRecomendado = ia.btuSolicitado; st.m2 = m2 || 0; }
+      else if(m2){ st.m2 = m2; st.btuRecomendado = recomendarBtu(m2); }
+      else { await enviarTexto(from, 'Disculpe, no logré identificar las medidas. ¿Me indica el largo por el ancho? Por ejemplo: 4 x 3, o la capacidad que busca, por ejemplo 12000 BTU.'); return res.sendStatus(200); }
+
+      st.paso='voltaje'; estado[from]=st;
+      // Si ya dijo voltaje en el mismo mensaje, usarlo
+      if(ia?.voltaje) st.voltaje = ia.voltaje;
+      await enviarTexto(from, `${st.nombre}, para ${st.m2 ? st.m2+' m2' : 'su ambiente'} la capacidad es de ${st.btuRecomendado} BTU.\n\n${st.btuRecomendado>=18000 ? 'Le comento que a partir de 18,000 BTU, los equipos trabajan únicamente en 220V.\n\n' : ''}¿Con qué voltaje cuenta en su vivienda? ¿110V o 220V?`);
+      return res.sendStatus(200);
+    }
+    if(st.paso==='voltaje'){
+      const volt = ia?.voltaje || (texto.includes('220') ? '220V' : texto.includes('110') ? '110V' : null);
+      if(!volt){ await enviarTexto(from, '¿Me confirma el voltaje? ¿110V o 220V?'); return res.sendStatus(200); }
+      // VALIDACION DE TU TABLA - NUNCA INVENTAR
+      if(st.btuRecomendado >= 18000 && volt === '110V'){
+        await enviarTexto(from, `${st.nombre}, le explico con transparencia: para ${st.btuRecomendado} BTU no existe equipo en 110V. Todos los equipos de 18,000 BTU en adelante son 220V.\n\n¿Desea que le cotice en 220V o prefiere 2 equipos de 12,000 BTU en 110V? Responda 220V o 2 EQUIPOS.`);
+        st.paso='resolver_110'; estado[from]=st; return res.sendStatus(200);
+      }
+      st.voltaje = volt; st.paso='modo'; estado[from]=st;
+      await enviarTexto(from, `Perfecto, ${st.nombre}. Voltaje: ${volt}.\n\n¿Cómo desea su cotización?\nResponda: INSTALADO, SOLO EQUIPO o ASESOR.`);
+      return res.sendStatus(200);
+    }
+    if(st.paso==='resolver_110'){
+      if(texto.includes('220')){ st.voltaje='220V'; st.paso='modo'; estado[from]=st; await enviarTexto(from, 'Perfecto, le cotizo en 220V. ¿Cómo desea su cotización? Responda: INSTALADO, SOLO EQUIPO o ASESOR.'); return res.sendStatus(200); }
+      if(texto.includes('2') || texto.includes('dos')){ st.btuRecomendado=12000; st.voltaje='110V'; st.paso='modo'; estado[from]=st; await enviarTexto(from, 'Entendido. Le cotizo 2 equipos de 12,000 BTU en 110V. ¿Cómo desea su cotización? Responda: INSTALADO o SOLO EQUIPO.'); return res.sendStatus(200); }
+      await enviarTexto(from, 'Responda 220V o 2 EQUIPOS.'); return res.sendStatus(200);
+    }
+    if(st.paso==='modo'){
+      const quiere = ia?.quiere || (texto.includes('asesor') ? 'asesor' : texto.includes('solo') ? 'solo_equipo' : texto.includes('instal') ? 'instalado' : null);
+      if(quiere==='asesor'){
+        console.log(`LEAD ASESOR - ${st.nombre} | ${from} | ${st.ubicacionTexto} | ${st.m2}m2 | ${st.btuRecomendado}BTU | ${st.voltaje}`);
+        await enviarTexto(from, `Con gusto, ${st.nombre}. Un asesor de ANCA le atenderá en breve.\n\nDatos registrados:\nNombre: ${st.nombre}\nUbicación: ${st.ubicacionTexto}\nMedidas: ${st.m2} m2\nCapacidad: ${st.btuRecomendado} BTU\nVoltaje: ${st.voltaje}`);
+        return res.sendStatus(200);
+      }
+      if(!quiere){ await enviarTexto(from, '¿Cómo desea su cotización? Responda: INSTALADO o SOLO EQUIPO.'); return res.sendStatus(200); }
+      st.modo = quiere==='solo_equipo' ? 'suministro' : 'instalado'; st.paso='elegir_equipo'; estado[from]=st;
+      // MOSTRAR SOLO LO QUE EXISTE EN LA TABLA, FILTRADO POR LO QUE PIDIO
+      let filtrados = PRODUCTOS.filter(p=>p.btu===st.btuRecomendado && p.voltaje===st.voltaje);
+      if(ia?.marcaSolicitada) filtrados = filtrados.filter(p=>p.marca===ia.marcaSolicitada);
+      if(ia?.tipoSolicitado) filtrados = filtrados.filter(p=>p.tipo===ia.tipoSolicitado);
+      if(filtrados.length===0){
+        // No inventar, decir la verdad y ofrecer lo que SI hay
+        const disponibles = PRODUCTOS.filter(p=>p.btu===st.btuRecomendado);
+        if(disponibles.length===0){ await enviarTexto(from, `${st.nombre}, disculpe, no tenemos disponibilidad en ${st.btuRecomendado} BTU. ¿Le ofrezco la capacidad más cercana?`); return res.sendStatus(200); }
+        await enviarTexto(from, `${st.nombre}, en ${st.btuRecomendado} BTU y ${st.voltaje} no tenemos esa marca/tipo, pero sí tenemos estas opciones reales en ${st.btuRecomendado} BTU:`);
+        filtrados = disponibles;
+      }
+      st.listaActual = filtrados.map(p=>p.id); estado[from]=st;
+      let textoLista = `${st.nombre}, estas son las opciones disponibles en ${st.btuRecomendado} BTU en ${st.voltaje} ${st.modo==='instalado' ? 'con instalación' : 'solo equipo'}:\n\n`;
+      filtrados.forEach((p,i)=>{
+        const precio = st.modo==='instalado' ? p.instalado : p.suministro;
+        textoLista += `${i+1}. ${p.marca} ${p.tipo} ${p.btu} BTU - Modelo ${p.modelo}\n   Voltaje: ${p.voltaje} | ${p.inverter} | ${p.seer}\n   Precio: ${fmt(precio)}\n\n`;
+      });
+      textoLista += 'Responda con el número del equipo que le interesa. Ej: 1';
+      await enviarTexto(from, textoLista);
+      return res.sendStatus(200);
+    }
+    if(st.paso==='elegir_equipo'){
+      const num = parseInt(texto);
+      const lista = st.listaActual || [];
+      if(num>=1 && num<=lista.length){
+        const p = PRODUCTOS.find(x=>x.id===lista[num-1]);
+        st.productoId = p.id; estado[from]=st;
+        if(st.modo==='instalado'){
+          st.paso='ubicacion_final'; estado[from]=st;
+          await enviarTexto(from, `Excelente elección, ${st.nombre}.\n\n${p.marca} ${p.tipo} ${p.btu} BTU\nModelo: ${p.modelo}\nVoltaje: ${p.voltaje} | ${p.inverter} | ${p.seer}\nPrecio con instalación base: ${fmt(p.instalado)}\n\nPara brindarle el total exacto, ¿me comparte su ubicación por WhatsApp?\nAdjuntar > Ubicación > Enviar ubicación actual.`);
+        } else {
+          await enviarTexto(from, `Excelente elección, ${st.nombre}.\n\n${p.marca} ${p.tipo} ${p.btu} BTU\nModelo: ${p.modelo}\nVoltaje: ${p.voltaje} | ${p.inverter} | ${p.seer}\n\nTOTAL SOLO EQUIPO: ${fmt(p.suministro)}\n\nIncluye equipo nuevo en caja, garantía 18 meses en compresor y 1 año en partes, envío en Managua.\n\n¿Desea que le apartemos este equipo? Responda SI.`);
+          st.paso='esperando_si'; estado[from]=st;
+        }
+        return res.sendStatus(200);
+      }
+      await enviarTexto(from, `Por favor, responda con el número del equipo, del 1 al ${lista.length}. Si desea otra marca o capacidad, dígamelo y le muestro lo que sí tenemos.`);
       return res.sendStatus(200);
     }
     if(st.paso==='esperando_si' && (texto==='si' || texto==='sí')){
       const p = PRODUCTOS.find(x=>x.id===st.productoId);
-      console.log(`VENTA APARTADA - Nombre: ${st.nombre} | Tel: ${from} | Equipo: ${p?.marca} ${p?.modelo} | Vive: ${st.ubicacionTexto}`);
-      await enviarTexto(from, `Listo ${st.nombre}! Apartado ✅\n\nUn asesor de ANCA te va a contactar para confirmar.\n\nTus datos:\nNombre: ${st.nombre}\nVive en: ${st.ubicacionTexto}\nEquipo: ${p?.marca} ${p?.modelo}\n\nGracias por elegir ANCA Marketplace!`);
-      estado[from]={paso:'inicio'};
+      console.log(`APARTADO - ${st.nombre} | ${from} | ${p?.marca} ${p?.modelo} | ${st.ubicacionTexto}`);
+      await enviarTexto(from, `Listo, ${st.nombre}. Su equipo quedó apartado.\n\nUn asesor de ANCA le contactará para confirmar su pedido.\n\nResumen:\nNombre: ${st.nombre}\nUbicación: ${st.ubicacionTexto}\nEquipo: ${p?.marca} ${p?.modelo}\n\nGracias por elegir ANCA Marketplace.`);
+      estado[from]={paso:'inicio', nombre:null, ubicacionTexto:null, m2:null, btuRecomendado:null, voltaje:null, modo:null, productoId:null};
       return res.sendStatus(200);
     }
-    // Fallback segun paso actual
-    if(!st.nombre){ estado[from]={paso:'nombre'}; await enviarTexto(from, 'Hola! Para ayudarte, como te llamas? Nombre y apellido por favor.'); }
-    else await menuPrincipal(from, st.nombre);
+    if(!st.nombre){ estado[from]={...st, paso:'nombre'}; await enviarTexto(from, 'Buenas tardes, le atiende ANCA Marketplace. ¿Con quién tengo el gusto?'); }
+    else await enviarTexto(from, `${st.nombre}, disculpe, no logré entenderle. ¿Me puede repetir su respuesta?`);
     return res.sendStatus(200);
-  } catch(e){ console.log('ERROR WEBHOOK', e); return res.sendStatus(200); }
+  } catch(e){ console.log('ERROR', e); return res.sendStatus(200); }
 });
+
 app.get('/', (req,res)=>res.send('Bot ANCA activo'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, ()=>console.log('ANCA corriendo en puerto '+PORT));
