@@ -1,11 +1,12 @@
-// BOT ANCA - v15 JS para Render - Menu tipo LAFISE
+// BOT ANCA - v16 FINAL CORREGIDO
+const fetch = require('node-fetch');
 const express = require('express');
 const app = express();
 app.use(express.json());
 
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'anca123';
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'anca2025';
 
 const ANCA_LAT = 12.1340;
 const ANCA_LON = -86.3590;
@@ -40,11 +41,14 @@ function fmt(n){ return 'C$' + n.toLocaleString('en-US'); }
 
 async function enviar(to, payload){
   const url = `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`;
-  await fetch(url, {
+  const r = await fetch(url, {
     method:'POST',
     headers:{Authorization:`Bearer ${WHATSAPP_TOKEN}`, 'Content-Type':'application/json'},
     body: JSON.stringify({messaging_product:'whatsapp', to, ...payload})
   });
+  const data = await r.text();
+  console.log('ENVIO A', to, 'STATUS', r.status, data);
+  return data;
 }
 function enviarTexto(to, body){
   return enviar(to, {type:'text', text:{body}});
@@ -55,25 +59,25 @@ function enviarLista(to, body, button, sections){
 
 function menuPrincipal(to){
   return enviarLista(to,
-    '¡Hola, soy tu asistente virtual de ANCA Marketplace! ❄️ Puedo ayudarte con cotizaciones 24/7.\n\nTe invito a seleccionar una opción 👇',
-    'Menú de opciones ✅',
+    'Hola, soy tu asistente virtual de ANCA Marketplace! Puedo ayudarte con cotizaciones 24/7.\n\nTe invito a seleccionar una opcion:',
+    'Menu de opciones',
     [{title:'ANCA Marketplace', rows:[
-      {id:'menu_instalado', title:'Suministro e Instalación ❄️', description:'Equipo + instalado, con garantía'},
-      {id:'menu_solo_equipo', title:'Solo equipo 📦', description:'Solo suministro, sin instalación'},
-      {id:'menu_asesor', title:'Hablar con asesor 👨‍💼', description:'Te atiende una persona de ANCA'}
+      {id:'menu_instalado', title:'Suministro e Instalado', description:'Equipo + instalado, con garantia'},
+      {id:'menu_solo_equipo', title:'Solo equipo', description:'Solo suministro, sin instalacion'},
+      {id:'menu_asesor', title:'Hablar con asesor', description:'Te atiende una persona de ANCA'}
     ]}]
   );
 }
 function menuBtu(to, modo){
   return enviarLista(to,
-    `Perfecto, elegiste ${modo==='instalado' ? 'Suministro e Instalación' : 'Solo equipo'}.\n\n¿Qué capacidad necesita?`,
-    'Ver capacidades ✅',
+    `Perfecto, elegiste ${modo==='instalado' ? 'Suministro e Instalacion' : 'Solo equipo'}.\n\nQue capacidad necesita?`,
+    'Ver capacidades',
     [{title:'Capacidades disponibles', rows:[
-      {id:`btu_6000_${modo}`, title:'6,000 BTU', description:'Para cuarto pequeño'},
-      {id:`btu_12000_${modo}`, title:'12,000 BTU', description:'Para cuarto / sala pequeña'},
+      {id:`btu_6000_${modo}`, title:'6,000 BTU', description:'Para cuarto pequeno'},
+      {id:`btu_12000_${modo}`, title:'12,000 BTU', description:'Para cuarto / sala pequena'},
       {id:`btu_18000_${modo}`, title:'18,000 BTU', description:'Para sala mediana'},
       {id:`btu_24000_${modo}`, title:'24,000 BTU', description:'Para sala grande'},
-      {id:`btu_36000_${modo}`, title:'36,000 BTU', description:'Para local / área grande'},
+      {id:`btu_36000_${modo}`, title:'36,000 BTU', description:'Para local / area grande'},
       {id:`btu_60000_${modo}`, title:'60,000 BTU', description:'Piso-Techo / Cassette'}
     ]}]
   );
@@ -82,11 +86,12 @@ function menuEquipos(to, btu, modo){
   const filtrados = PRODUCTOS.filter(p=>p.btu===btu);
   const rows = filtrados.map(p=>{
     const precio = modo==='instalado' ? p.instalado : p.suministro;
-    return {id:`prod_${p.id}_${modo}`, title:`${p.marca} ${p.tipo} ${p.btu} BTU`, description:`${p.modelo} | ${p.voltaje} | ${p.inverter} | ${p.seer} | ${fmt(precio)}`};
+    const tipoCorto = p.tipo==='PISO-TECHO' ? 'P-TECHO' : p.tipo;
+    return {id:`prod_${p.id}_${modo}`, title:`${p.marca} ${tipoCorto} ${p.btu}`, description:`${p.modelo} | ${p.voltaje} | ${p.seer} | ${fmt(precio)}`};
   });
   return enviarLista(to,
-    `Para ${btu} BTU tenemos ${modo==='instalado' ? 'con instalación' : 'solo equipo'}:\n\nTocá el equipo que te interesa 👇`,
-    'Ver equipos ✅',
+    `Para ${btu} BTU tenemos ${modo==='instalado' ? 'con instalacion' : 'solo equipo'}:\n\nToca el equipo que te interesa:`,
+    'Ver equipos',
     [{title:`Equipos ${btu} BTU`, rows}]
   );
 }
@@ -104,7 +109,6 @@ function calcularKm(lat, lon){
   return {dist, costo: Math.round((dist-KM_GRATIS)*PRECIO_KM_EXTRA)};
 }
 
-// Memoria simple por número
 const estado = {};
 
 app.get('/webhook', (req,res)=>{
@@ -117,12 +121,12 @@ app.get('/webhook', (req,res)=>{
 
 app.post('/webhook', async (req,res)=>{
   try{
+    console.log('WEBHOOK RECIBIDO', JSON.stringify(req.body).slice(0,500));
     const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     if(!msg) return res.sendStatus(200);
     const from = msg.from;
     const st = estado[from] || {};
 
-    // Ubicación del cliente
     if(msg.type==='location'){
       const {dist, costo} = calcularKm(msg.location.latitude, msg.location.longitude);
       const p = PRODUCTOS.find(x=>x.id===st.productoId);
@@ -130,7 +134,7 @@ app.post('/webhook', async (req,res)=>{
         const precioBase = p.instalado;
         const total = precioBase + costo;
         await enviarTexto(from,
-          `Perfecto, eligió:\n*${p.marca} ${p.tipo} ${p.btu} BTU*\nModelo: ${p.modelo}\nVoltaje: ${p.voltaje} | ${p.inverter} | ${p.seer}\n\n*Precio con instalación incluye:*\n• Servicio de instalación básica\n• Material de fijación\n• Sellado\n• Base de la unidad condensadora\n• Protector de voltaje de cortesía\n\n*Garantía:* 18 meses en compresor y 1 año en partes\n*Envío:* Hasta la puerta de su casa en Managua\n\nPrecio base: ${fmt(precioBase)}\nDistancia desde ANCA: ${dist} km\n${costo>0 ? `Kilometraje: (${dist} - 20) x C$16 = ${fmt(costo)}\n` : 'Kilometraje: C$0 (dentro de los 20 km gratis)\n'}*TOTAL A PAGAR: ${fmt(total)}*\n\n¿Le apartamos este equipo? Escriba *SI* para apartarlo.`
+          `Perfecto, eligio:\n*${p.marca} ${p.tipo} ${p.btu} BTU*\nModelo: ${p.modelo}\nVoltaje: ${p.voltaje} | ${p.inverter} | ${p.seer}\n\n*Precio con instalacion incluye:*\n- Servicio de instalacion basica\n- Material de fijacion\n- Sellado\n- Base de la unidad condensadora\n- Protector de voltaje de cortesia\n\n*Garantia:* 18 meses en compresor y 1 ano en partes\n*Envio:* Hasta la puerta de su casa en Managua\n\nPrecio base: ${fmt(precioBase)}\nDistancia desde ANCA: ${dist} km\n${costo>0 ? `Kilometraje: (${dist} - 20) x C$16 = ${fmt(costo)}\n` : 'Kilometraje: C$0 (dentro de los 20 km gratis)\n'}*TOTAL A PAGAR: ${fmt(total)}*\n\nLe apartamos este equipo? Escriba *SI* para apartarlo.`
         );
       }
       return res.sendStatus(200);
@@ -141,27 +145,27 @@ app.post('/webhook', async (req,res)=>{
 
     if(listId==='menu_instalado' || texto==='1'){ estado[from]={modo:'instalado'}; await menuBtu(from,'instalado'); }
     else if(listId==='menu_solo_equipo' || texto==='2'){ estado[from]={modo:'suministro'}; await menuBtu(from,'suministro'); }
-    else if(listId==='menu_asesor'){ await enviarTexto(from,'Perfecto, en un momento le atiende un asesor de ANCA. ¿Me deja su nombre por favor?'); }
+    else if(listId==='menu_asesor'){ await enviarTexto(from,'Perfecto, en un momento le atiende un asesor de ANCA. Me deja su nombre por favor?'); }
     else if(listId.startsWith('btu_')){
-      const partes = listId.split('_'); // btu_12000_instalado
+      const partes = listId.split('_');
       const btu = parseInt(partes[1]);
       const modo = partes[2];
       estado[from]={...st, modo, btu};
       await menuEquipos(from, btu, modo);
     }
     else if(listId.startsWith('prod_')){
-      const partes = listId.split('_'); // prod_p10_instalado
+      const partes = listId.split('_');
       const prodId = partes[1];
       const modo = partes[2];
       estado[from]={...st, modo, productoId: prodId};
       const p = PRODUCTOS.find(x=>x.id===prodId);
       if(modo==='instalado'){
         await enviarTexto(from,
-          `*Importante sobre el kilometraje:*\nEn ANCA, la instalación dentro de Managua y alrededores hasta 20 km desde nuestra tienda en Km 9 Carretera Nueva a León, Residencial Altos de Motastepe, es *sin costo de kilometraje*.\n\nSi su instalación es *fuera de Managua, a más de 20 km*, se agrega *C$16 por cada km extra*.\nEjemplo: Si usted está a 40 km, son 20 km extra x C$16 = C$320.\n\nPara calcularle el costo exacto, ¿me manda su ubicación por WhatsApp? 📍\nAdjuntar > Ubicación > Enviar ubicación actual`
+          `*Importante sobre el kilometraje:*\nEn ANCA, la instalacion dentro de Managua y alrededores hasta 20 km desde nuestra tienda en Km 9 Carretera Nueva a Leon, Residencial Altos de Motastepe, es *sin costo de kilometraje*.\n\nSi su instalacion es *fuera de Managua, a mas de 20 km*, se agrega *C$16 por cada km extra*.\nEjemplo: Si usted esta a 40 km, son 20 km extra x C$16 = C$320.\n\nPara calcularle el costo exacto, me manda su ubicacion por WhatsApp?\nAdjuntar > Ubicacion > Enviar ubicacion actual`
         );
       } else {
         await enviarTexto(from,
-          `Perfecto, eligió:\n*${p.marca} ${p.tipo} ${p.btu} BTU*\nModelo: ${p.modelo}\nVoltaje: ${p.voltaje} | ${p.inverter} | ${p.seer}\n\n*Precio solo equipo incluye:*\n• Equipo completo nuevo en caja\n• Garantía: 18 meses compresor y 1 año partes\n• Envío hasta su casa en Managua\n\n*TOTAL: ${fmt(p.suministro)}*\n\n¿Le apartamos este equipo? Escriba *SI* para apartarlo.`
+          `Perfecto, eligio:\n*${p.marca} ${p.tipo} ${p.btu} BTU*\nModelo: ${p.modelo}\nVoltaje: ${p.voltaje} | ${p.inverter} | ${p.seer}\n\n*Precio solo equipo incluye:*\n- Equipo completo nuevo en caja\n- Garantia: 18 meses compresor y 1 ano partes\n- Envio hasta su casa en Managua\n\n*TOTAL: ${fmt(p.suministro)}*\n\nLe apartamos este equipo? Escriba *SI* para apartarlo.`
         );
       }
     }
@@ -169,7 +173,7 @@ app.post('/webhook', async (req,res)=>{
       await menuPrincipal(from);
     }
     return res.sendStatus(200);
-  } catch(e){ console.log(e); return res.sendStatus(200); }
+  } catch(e){ console.log('ERROR WEBHOOK', e); return res.sendStatus(200); }
 });
 
 app.get('/', (req,res)=>res.send('Bot ANCA activo'));
